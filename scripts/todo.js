@@ -1,7 +1,11 @@
 const taskList = document.getElementById("taskList");
+const STORAGE_KEY = "todo-items";
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+let tasksData = [];
+let currentTaskId = null;
 
 const todoForm = document.querySelector(".todo-form");
-const SVG_NS = "http://www.w3.org/2000/svg";
 
 //создаем кнопку add note
 const add_button = document.createElement("button");
@@ -49,57 +53,110 @@ input_form.placeholder = "input your task here";
 input_form.classList.add("animated-input");
 add_form.appendChild(input_form);
 
+const {
+  overlay: taskModalOverlay,
+  modalTitle,
+  subtasksList,
+  subtaskInput,
+  subtaskForm,
+  closeButton: modalCloseButton,
+} = createTaskModal();
+
+function generateId() {
+  return (
+    Date.now().toString(36) + Math.random().toString(36).substring(2, 8)
+  );
+}
+
+function saveTasks() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasksData));
+}
+
+function restoreTasks() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) {
+      tasksData = [];
+      return;
+    }
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) {
+      tasksData = [];
+      return;
+    }
+    tasksData = parsed
+      .map((entry) => normalizeTask(entry))
+      .filter(Boolean);
+  } catch (error) {
+    console.error("Failed to restore tasks:", error);
+    tasksData = [];
+  }
+}
+
+function normalizeTask(entry) {
+  if (typeof entry === "string") {
+    const text = entry.trim();
+    return text
+      ? {
+          id: generateId(),
+          text,
+          subtasks: [],
+        }
+      : null;
+  }
+
+  if (!entry || typeof entry !== "object") return null;
+
+  const text = typeof entry.text === "string" ? entry.text.trim() : "";
+  if (!text) return null;
+
+  const subtasks = Array.isArray(entry.subtasks)
+    ? entry.subtasks
+        .map((subtask) => {
+          if (!subtask || typeof subtask.text !== "string") return null;
+          const subtaskText = subtask.text.trim();
+          return subtaskText
+            ? {
+                id: subtask.id || generateId(),
+                text: subtaskText,
+              }
+            : null;
+        })
+        .filter(Boolean)
+    : [];
+
+  return {
+    id: entry.id || generateId(),
+    text,
+    subtasks,
+  };
+}
+
 //написать функцию addTask
 
-function addTask() {
-  const taskText = input_form.value.trim();
+function addTask(presetText = null, options = {}) {
+  const taskTextSource =
+    typeof presetText === "string" ? presetText : input_form.value;
+  const taskText = taskTextSource.trim();
+  const skipSave = Boolean(options.skipSave);
 
-  if (taskText) {
-    // Создаём элемент списка
-    const listItem = document.createElement("li");
-    listItem.classList.add("task-item");
+  if (!taskText) return;
 
-    // Создаём чекбокс удаления
-    const taskCheckbox = document.createElement("input");
-    taskCheckbox.type = "checkbox";
-    taskCheckbox.classList.add("task-checkbox");
+  const newTask = {
+    id: options.id || generateId(),
+    text: taskText,
+    subtasks: Array.isArray(options.subtasks) ? options.subtasks : [],
+  };
 
-    // Создаём текст задачи
-    const taskSpan = document.createElement("span");
-    taskSpan.textContent = taskText;
-    taskSpan.classList.add("task-text");
+  tasksData.push(newTask);
+  renderTasks();
 
-    // Собираем элемент: чекбокс + текст
-    listItem.appendChild(taskCheckbox);
-    listItem.appendChild(taskSpan);
-
-    const handleRemoval = () => {
-      taskCheckbox.disabled = true;
-      listItem.classList.add("task-removing");
-      listItem.addEventListener(
-        "animationend",
-        (event) => {
-          if (event.animationName === "task-slide-out") {
-            if (taskList.contains(listItem)) {
-              taskList.removeChild(listItem);
-            }
-          }
-        },
-        { once: true }
-      );
-    };
-
-    taskCheckbox.addEventListener("change", () => {
-      if (taskCheckbox.checked) {
-        handleRemoval();
-      }
-    });
-
-    // Добавляем в список
-    taskList.appendChild(listItem);
-
-    // Очищаем поле ввода
+  if (presetText === null) {
     input_form.value = "";
+  }
+
+  if (!skipSave) {
+    saveTasks();
   }
 }
 
@@ -110,3 +167,211 @@ add_form.addEventListener("submit", (e) => {
   e.preventDefault();
   addTask();
 });
+
+modalCloseButton.addEventListener("click", closeTaskModal);
+taskModalOverlay.addEventListener("click", (event) => {
+  if (event.target === taskModalOverlay) {
+    closeTaskModal();
+  }
+});
+
+subtaskForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!currentTaskId) return;
+  const text = subtaskInput.value.trim();
+  if (!text) return;
+  const task = tasksData.find((entry) => entry.id === currentTaskId);
+  if (!task) return;
+  task.subtasks.push({
+    id: generateId(),
+    text,
+  });
+  subtaskInput.value = "";
+  renderSubtasks(task);
+  saveTasks();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeTaskModal();
+  }
+});
+
+restoreTasks();
+renderTasks();
+
+function renderTasks() {
+  taskList.innerHTML = "";
+
+  tasksData.forEach((task) => {
+    const listItem = document.createElement("li");
+    listItem.classList.add("task-item");
+    listItem.dataset.taskId = task.id;
+
+    const taskCheckbox = document.createElement("input");
+    taskCheckbox.type = "checkbox";
+    taskCheckbox.classList.add("task-checkbox");
+
+    const taskContentButton = document.createElement("button");
+    taskContentButton.type = "button";
+    taskContentButton.classList.add("task-content");
+
+    const taskSpan = document.createElement("span");
+    taskSpan.textContent = task.text;
+    taskSpan.classList.add("task-text");
+
+    taskContentButton.append(taskSpan);
+
+    taskCheckbox.addEventListener("change", () => {
+      if (taskCheckbox.checked) {
+        handleRemoval(task.id, listItem);
+      }
+    });
+
+    taskContentButton.addEventListener("click", () => {
+      openTaskModal(task.id);
+    });
+
+    listItem.append(taskCheckbox, taskContentButton);
+    taskList.appendChild(listItem);
+  });
+}
+
+function handleRemoval(taskId, listItem) {
+  listItem.classList.add("task-removing");
+  listItem.addEventListener(
+    "animationend",
+    (event) => {
+      if (event.animationName === "task-slide-out") {
+        tasksData = tasksData.filter((task) => task.id !== taskId);
+        if (currentTaskId === taskId) {
+          closeTaskModal();
+        }
+        saveTasks();
+        renderTasks();
+      }
+    },
+    { once: true }
+  );
+}
+
+function openTaskModal(taskId) {
+  const task = tasksData.find((entry) => entry.id === taskId);
+  if (!task) return;
+
+  currentTaskId = taskId;
+  modalTitle.textContent = task.text;
+  renderSubtasks(task);
+  subtaskInput.value = "";
+
+  taskModalOverlay.classList.add("is-visible");
+  document.body.classList.add("modal-open");
+}
+
+function closeTaskModal() {
+  taskModalOverlay.classList.remove("is-visible");
+  document.body.classList.remove("modal-open");
+  currentTaskId = null;
+}
+
+function renderSubtasks(task) {
+  subtasksList.innerHTML = "";
+  if (!task.subtasks.length) {
+    const placeholder = document.createElement("li");
+    placeholder.classList.add("subtasks-empty");
+    placeholder.textContent = "Подзадач пока нет";
+    subtasksList.appendChild(placeholder);
+    return;
+  }
+
+  task.subtasks.forEach((subtask) => {
+    const subtaskItem = document.createElement("li");
+    subtaskItem.classList.add("subtask-item");
+
+    const subtaskCheckbox = document.createElement("input");
+    subtaskCheckbox.type = "checkbox";
+    subtaskCheckbox.classList.add("subtask-checkbox");
+
+    const subtaskText = document.createElement("span");
+    subtaskText.textContent = subtask.text;
+
+    subtaskItem.append(subtaskCheckbox, subtaskText);
+    subtasksList.appendChild(subtaskItem);
+
+    subtaskCheckbox.addEventListener("change", () => {
+      if (subtaskCheckbox.checked) {
+        subtaskItem.classList.add("subtask-removing");
+        subtaskCheckbox.disabled = true;
+        subtaskItem.addEventListener(
+          "animationend",
+          (event) => {
+            if (event.animationName === "subtask-fade-out") {
+              task.subtasks = task.subtasks.filter(
+                (entry) => entry.id !== subtask.id
+              );
+              saveTasks();
+              renderSubtasks(task);
+            }
+          },
+          { once: true }
+        );
+      }
+    });
+  });
+}
+
+function createTaskModal() {
+  const overlay = document.createElement("div");
+  overlay.classList.add("task-modal-overlay");
+
+  const modal = document.createElement("div");
+  modal.classList.add("task-modal");
+
+  const header = document.createElement("div");
+  header.classList.add("task-modal__header");
+
+  const title = document.createElement("h2");
+  title.classList.add("task-modal__title");
+  title.textContent = "Задача";
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.classList.add("task-modal__close");
+  closeButton.setAttribute("aria-label", "Закрыть");
+  closeButton.textContent = "×";
+
+  const subtasksTitle = document.createElement("p");
+  subtasksTitle.classList.add("subtasks-title");
+  subtasksTitle.textContent = "Подзадачи";
+
+  const subtasksList = document.createElement("ul");
+  subtasksList.classList.add("subtasks-list");
+
+  const subtaskForm = document.createElement("form");
+  subtaskForm.classList.add("subtask-form");
+
+  const subtaskInput = document.createElement("input");
+  subtaskInput.type = "text";
+  subtaskInput.placeholder = "add subtask";
+  subtaskInput.classList.add("subtask-input");
+
+  const subtaskButton = document.createElement("button");
+  subtaskButton.type = "submit";
+  subtaskButton.classList.add("subtask-submit");
+  subtaskButton.textContent = "Add";
+
+  subtaskForm.append(subtaskInput, subtaskButton);
+  header.append(title, closeButton);
+  modal.append(header, subtasksTitle, subtasksList, subtaskForm);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  return {
+    overlay,
+    modalTitle: title,
+    subtasksList,
+    subtaskInput,
+    subtaskForm,
+    closeButton,
+  };
+}
